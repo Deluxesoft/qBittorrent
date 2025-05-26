@@ -1,0 +1,288 @@
+name: Build qBittorrent Windows EXE (Robust & Static)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*' # Trigger on new tags like v4.6.5 or v5.0.0
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  build_windows_static:
+    runs-on: windows-latest # Use the latest Windows environment provided by GitHub
+
+    env:
+      # Common environment variables for easier management
+      VCPKG_REPO_DIR: ${{ github.workspace }}/vcpkg_repo
+      LIBTORRENT_SOURCE_DIR: ${{ github.workspace }}/libtorrent_source
+      LIBTORRENT_INSTALL_DIR: ${{ github.workspace }}/libtorrent_install
+      QB_BUILD_DIR: ${{ github.workspace }}/build_qbittorrent
+      # The version extracted from the tag (e.g., 'v5.0.0' becomes '5.0.0')
+      QB_VERSION: ${{ github.ref_name || '0.0.0-dev' }} # Default for manual runs
+
+    steps:
+    - name: Checkout qBittorrent Repository
+      uses: actions/checkout@v4
+      with:
+        submodules: true # Ensure all submodules are checked out
+
+    - name: Configure and Prepare MSVC Environment
+      # Dynamically find the VS 2019 installation and set up the x64 Native Tools environment.
+      # This is more robust than hardcoding paths.
+      shell: pwsh
+      run: |
+        $vsWherePath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (-not (Test-Path $vsWherePath)) {
+          Write-Error "vswhere.exe not found at $vsWherePath. Cannot locate Visual Studio."
+          exit 1
+        }
+
+        # Find the path to the VS 2019 Community Edition
+        $vsInstallPath = & "$vsWherePath" -latest -products Microsoft.VisualStudio.Product.Community -version 16.0 -property installationPath
+        if (-not $vsInstallPath) {
+          Write-Error "Visual Studio 2019 Community Edition not found. Ensure it's installed on the runner."
+          exit 1
+        }
+        Write-Host "Found Visual Studio 2019 at: $vsInstallPath"
+
+        $vcvarsallPath = Join-Path $vsInstallPath "VC\Auxiliary\Build\vcvarsall.bat"
+        if (-not (Test-Path $vcvarsallPath)) {
+          Write-Error "vcvarsall.bat not found at $vcvarsallPath."
+          exit 1
+        }
+        Write-Host "Calling vcvarsall.bat to set up MSVC environment..."
+
+        # Use cmd to call vcvarsall.bat as it correctly sets the environment for the current shell.
+        # Then we'll run subsequent commands in pwsh which will inherit the environment.
+        cmd.exe /c "`"$vcvarsallPath`" amd64 && cls" # cls to clear the output of vcvarsall.bat if desired
+
+        Write-Host "MSVC environment variables are now configured for x64."
+        
+        # Add necessary paths to environment for subsequent PowerShell steps
+        # This makes sure cl.exe, link.exe etc. are found
+        $env:Path += ";${vsInstallPath}\VC\Tools\MSVC\*\bin\HostX64\x64" # General path to MSVC tools
+        $env:Path += ";${vsInstallPath}\Common7\IDE" # MSBuild related
+        $env:Path += ";${vsInstallPath}\Common7\Tools" # DevShell related
+        Write-Host "Updated PATH for MSVC tools."
+
+
+    - name: Install CMake and Ninja via Chocolatey
+      # Chocolatey is a package manager for Windows, commonly used in CI.
+      shell: pwsh
+      run: |
+        Write-Host "Installing CMake..."
+        choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System' -y
+        Write-Host "Installing Ninja..."
+        choco install ninja -y
+        Write-Host "CMake and Ninja installed."
+
+    - name: Set VCPKG_ROOT Environment Variable
+      # This explicitly sets VCPKG_ROOT before caching or cloning vcpkg.
+      shell: pwsh
+      run: |
+        echo "VCPKG_ROOT=${{ env.VCPKG_REPO_DIR }}" | Out-File -FilePath $env:GITHUB_ENV -Append
+        Write-Host "VCPKG_ROOT set to $env:VCPKG_REPO_DIR"
+
+    - name: Cache vcpkg components and installed packages
+      uses: actions/cache@v4
+      id: cache-vcpkg
+      with:
+        path: |
+          ${{ env.VCPKG_REPO_DIR }}/archives
+          ${{ env.VCPKG_REPO_DIR }}/installed
+          ${{ env.VCPKG_REPO_DIR }}/packages
+        key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/vcpkg_commits.txt') }} # A custom file to invalidate cache, or based on manifest.
+        restore-keys: |
+          ${{ runner.os }}-vcpkg-
+
+    - name: Clone and Bootstrap vcpkg
+      shell: pwsh
+      run: |
+        if (-not (Test-Path "${{ env.VCPKG_REPO_DIR }}")) {
+          Write-Host "Cloning vcpkg into ${{ env.VCPKG_REPO_DIR }}..."
+          git clone https://github.com/microsoft/vcpkg.git ${{ env.VCPKG_REPO_DIR }}
+        } else {
+          Write-Host "vcpkg directory already exists, skipping clone."
+        }
+        
+        # Always bootstrap and integrate to ensure vcpkg itself is up-to-date and integrated
+        Write-Host "Bootstrapping vcpkg..."
+        cd ${{ env.VCPKG_REPO_DIR }}
+        .\bootstrap-vcpkg.bat -disableMetrics
+        Write-Host "Integrating vcpkg..."
+        .\vcpkg integrate install
+        Write-Host "vcpkg installation and integration complete."
+
+    - name: Install Base Dependencies via vcpkg (x64-windows-static)
+      # These are the core libraries qBittorrent needs.
+      shell: pwsh
+      run: |
+        cd ${{ env.VCPKG_REPO_DIR }}
+        Write-Host "Installing qBittorrent base dependencies..."
+        .\vcpkg install `
+          boost-circular-buffer:x64-windows-static `
+          boost-stacktrace:x64-windows-static `
+          openssl:x64-windows-static `
+          qt5-base:x64-windows-static `
+          qt5-svg:x64-windows-static `
+          qt5-tools:x64-windows-static `
+          qt5-winextras:x64-windows-static `
+          --clean-after-build # Saves disk space by deleting build artifacts
+        Write-Host "Base dependencies installed."
+
+    - name: Manually Build and Install libtorrent (RC_2_0 series)
+      # This implements Option 2 from the qBittorrent guide for precise libtorrent version control.
+      # We target the RC_2_0 branch, which is the newer series qBittorrent often uses.
+      shell: pwsh
+      id: build_libtorrent # ID for referencing outputs
+      run: |
+        Write-Host "Preparing for manual libtorrent build."
+        
+        # Create directories
+        New-Item -ItemType Directory -Force -Path ${{ env.LIBTORRENT_SOURCE_DIR }}
+        New-Item -ItemType Directory -Force -Path ${{ env.LIBTORRENT_INSTALL_DIR }}
+
+        # Clone libtorrent repository
+        if (-not (Test-Path "${{ env.LIBTORRENT_SOURCE_DIR }}\.git")) {
+          Write-Host "Cloning libtorrent into ${{ env.LIBTORRENT_SOURCE_DIR }}..."
+          git clone https://github.com/arvidn/libtorrent.git ${{ env.LIBTORRENT_SOURCE_DIR }}
+        } else {
+          Write-Host "Libtorrent source directory already exists, skipping clone."
+        }
+        
+        cd ${{ env.LIBTORRENT_SOURCE_DIR }}
+        Write-Host "Checking out RC_2_0 branch for libtorrent (newer series)..."
+        # If you need libtorrent 1.2.x series, change 'RC_2_0' to 'RC_1_2'
+        git checkout RC_2_0 
+        git pull # Ensure it's up-to-date with the chosen branch
+
+        Write-Host "Configuring libtorrent with CMake..."
+        cmake -G "Ninja" -B build `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_REPO_DIR }}\scripts\buildsystems\vcpkg.cmake" `
+          -DVCPKG_TARGET_TRIPLET="x64-windows-static" `
+          -DBUILD_SHARED_LIBS=OFF `
+          -Dstatic_runtime=ON `
+          -Ddeprecated-functions=ON # Enable for wider compatibility with qBittorrent
+        Write-Host "Libtorrent configuration complete."
+
+        Write-Host "Building libtorrent..."
+        cmake --build build --config Release
+        Write-Host "Libtorrent build complete."
+
+        Write-Host "Installing libtorrent to ${{ env.LIBTORRENT_INSTALL_DIR }}..."
+        cmake --install build --prefix ${{ env.LIBTORRENT_INSTALL_DIR }}
+        Write-Host "Libtorrent installation complete."
+        
+        # Output the libtorrent install path for the next step
+        echo "LIBTORRENT_INSTALL_DIR_OUTPUT=${{ env.LIBTORRENT_INSTALL_DIR }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+    - name: Configure qBittorrent Build with CMake
+      # This step uses CMake to set up the qBittorrent build system.
+      shell: pwsh
+      run: |
+        Write-Host "Configuring qBittorrent with CMake..."
+        # Create build directory if it doesn't exist
+        New-Item -ItemType Directory -Force -Path ${{ env.QB_BUILD_DIR }}
+        
+        cmake -G "Ninja" -B ${{ env.QB_BUILD_DIR }} `
+          -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_REPO_DIR }}\scripts\buildsystems\vcpkg.cmake" `
+          -DVCPKG_TARGET_TRIPLET="x64-windows-static" `
+          -DMSVC_RUNTIME_DYNAMIC=OFF `
+          -DLibtorrentRasterbar_DIR="${{ steps.build_libtorrent.outputs.LIBTORRENT_INSTALL_DIR_OUTPUT }}\lib\cmake\LibtorrentRasterbar" ` # Crucial: point to manually built libtorrent
+          "$env:GITHUB_WORKSPACE" # Source directory is the root of the checked out repo
+        Write-Host "qBittorrent CMake configuration complete."
+
+    - name: Build qBittorrent
+      # Compiles the qBittorrent project using Ninja.
+      shell: pwsh
+      run: |
+        Write-Host "Building qBittorrent..."
+        cmake --build ${{ env.QB_BUILD_DIR }} --config Release
+        Write-Host "qBittorrent build complete."
+
+    - name: Find qBittorrent Executable and Prepare for Installer
+      # Locates the compiled executable and copies it to the workspace root for Inno Setup.
+      shell: pwsh
+      id: prepare_exe_for_installer
+      run: |
+        $exeSourcePath = "${{ env.QB_BUILD_DIR }}\Release\qbittorrent.exe"
+        $exeDestPath = "${{ github.workspace }}\qbittorrent.exe"
+
+        if (-not (Test-Path $exeSourcePath)) {
+          Write-Error "Error: qbittorrent.exe not found at $exeSourcePath."
+          exit 1
+        }
+        Write-Host "Copying qbittorrent.exe from $exeSourcePath to $exeDestPath..."
+        Copy-Item -Path $exeSourcePath -Destination $exeDestPath -Force
+        Write-Host "Executable copied for installer."
+        
+        # Extract version number from tag (e.g., 'v5.0.0' -> '5.0.0')
+        $tagRef = "${{ github.ref_name }}"
+        $version = $tagRef -replace '^v'
+        Write-Host "Extracted version: $version"
+        echo "QB_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append # Set env var for Inno Setup
+
+    - name: Compile Inno Setup Installer
+      # Uses the Inno Setup GitHub Action to create the installer.
+      uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+      with:
+        path: qbittorrent_installer.iss # Path to your Inno Setup script
+        # options: /O+ # Force overwrite output, might be useful for debugging
+      id: compile_installer # Assign an ID to get the output path
+      
+    - name: Find Compiled Installer
+      # Locates the generated installer file.
+      shell: pwsh
+      id: find_installer
+      run: |
+        $installerName = "qBittorrent_${{ env.QB_VERSION }}_Installer.exe"
+        $installerPath = "${{ github.workspace }}\$installerName"
+        
+        if (-not (Test-Path $installerPath)) {
+          Write-Error "Error: Installer not found at $installerPath."
+          # Fallback to general search if the exact name isn't there (less robust)
+          $foundInstaller = Get-ChildItem -Path "${{ github.workspace }}" -Filter "*_Installer.exe" | Select-Object -First 1
+          if ($foundInstaller) {
+            $installerPath = $foundInstaller.FullName
+            Write-Warning "Exact installer name not found, but found: $installerPath"
+          } else {
+            exit 1
+          }
+        }
+        Write-Host "Found installer at: $installerPath"
+        echo "INSTALLER_PATH=$installerPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        echo "INSTALLER_NAME=$(Split-Path $installerPath -Leaf)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+
+    - name: Upload Installer as Workflow Artifact
+      # Makes the installer available for download from the workflow run summary.
+      uses: actions/upload-artifact@v4
+      with:
+        name: qbittorrent-windows-x64-installer
+        path: ${{ steps.find_installer.outputs.INSTALLER_PATH }}
+        if-no-files-found: error # Fail the workflow if the file is not found
+
+    - name: Create GitHub Release
+      # This step creates a new release on GitHub, attaching the installer.
+      # It only runs if the workflow was triggered by a tag push.
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v2
+      with:
+        files: ${{ steps.find_installer.outputs.INSTALLER_PATH }} # Attach the generated installer
+        name: qBittorrent Windows x64 - ${{ github.ref_name }} # Release name (e.g., "qBittorrent Windows x64 - v5.0.0")
+        tag_name: ${{ github.ref_name }} # Uses the pushed tag as the release tag
+        body: |
+          Automated build of qBittorrent for Windows (MSVC 2019, 64-bit Static).
+          
+          This release contains the compiled installer for `qbittorrent.exe`.
+          
+          **Installer Name:** `${{ steps.find_installer.outputs.INSTALLER_NAME }}`
+          **Libtorrent Series:** RC_2_0 (Newer)
+          
+          Tag: `${{ github.ref_name }}`
+          Commit SHA: `${{ github.sha }}`
+        prerelease: false # Set to true if you're pushing a beta/RC tag
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Automatically provided by GitHub
+
