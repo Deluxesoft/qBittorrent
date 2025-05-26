@@ -25,45 +25,14 @@ jobs:
       with:
         submodules: true # Ensure all submodules are checked out
 
-    - name: Configure and Prepare MSVC Environment
-      # Dynamically find the VS 2019 installation and set up the x64 Native Tools environment.
-      # This is more robust than hardcoding paths.
-      shell: pwsh
-      run: |
-        $vsWherePath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-        if (-not (Test-Path $vsWherePath)) {
-          Write-Error "vswhere.exe not found at $vsWherePath. Cannot locate Visual Studio."
-          exit 1
-        }
-
-        # Find the path to the VS 2019 Community Edition
-        $vsInstallPath = & "$vsWherePath" -latest -products Microsoft.VisualStudio.Product.Community -version 16.0 -property installationPath
-        if (-not $vsInstallPath) {
-          Write-Error "Visual Studio 2019 Community Edition not found. Ensure it's installed on the runner."
-          exit 1
-        }
-        Write-Host "Found Visual Studio 2019 at: $vsInstallPath"
-
-        $vcvarsallPath = Join-Path $vsInstallPath "VC\Auxiliary\Build\vcvarsall.bat"
-        if (-not (Test-Path $vcvarsallPath)) {
-          Write-Error "vcvarsall.bat not found at $vcvarsallPath."
-          exit 1
-        }
-        Write-Host "Calling vcvarsall.bat to set up MSVC environment..."
-
-        # Use cmd to call vcvarsall.bat as it correctly sets the environment for the current shell.
-        # Then we'll run subsequent commands in pwsh which will inherit the environment.
-        cmd.exe /c "`"$vcvarsallPath`" amd64 && cls" # cls to clear the output of vcvarsall.bat if desired
-
-        Write-Host "MSVC environment variables are now configured for x64."
-        
-        # Add necessary paths to environment for subsequent PowerShell steps
-        # This makes sure cl.exe, link.exe etc. are found
-        $env:Path += ";${vsInstallPath}\VC\Tools\MSVC\*\bin\HostX64\x64" # General path to MSVC tools
-        $env:Path += ";${vsInstallPath}\Common7\IDE" # MSBuild related
-        $env:Path += ";${vsInstallPath}\Common7\Tools" # DevShell related
-        Write-Host "Updated PATH for MSVC tools."
-
+    - name: Setup MSVC Development Environment
+      # Uses the dedicated GitHub Action for setting up MSVC dev environment.
+      # This is more robust than manual vswhere/vcvarsall.bat calls.
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64 # Specify x64 architecture
+        # You can specify specific VS version if needed, e.g., 'vs2019'
+        # toolset: '14.29' # Example for a specific toolset version
 
     - name: Install CMake and Ninja via Chocolatey
       # Chocolatey is a package manager for Windows, commonly used in CI.
@@ -228,7 +197,6 @@ jobs:
       uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
       with:
         path: qbittorrent_installer.iss # Path to your Inno Setup script
-        # options: /O+ # Force overwrite output, might be useful for debugging
       id: compile_installer # Assign an ID to get the output path
       
     - name: Find Compiled Installer
@@ -285,4 +253,3 @@ jobs:
         prerelease: false # Set to true if you're pushing a beta/RC tag
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Automatically provided by GitHub
-
