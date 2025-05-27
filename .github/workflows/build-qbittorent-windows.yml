@@ -37,24 +37,33 @@ jobs:
         run: |
           if ((Get-Command "ninja.exe" -ErrorAction SilentlyContinue) -eq $null)
           {
-            choco install ninja
+             choco install ninja
           }
           where.exe ninja
           ninja --version
 
+      - name: Set variables for vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', (process.env.ACTIONS_CACHE_URL || ''));
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', (process.env.ACTIONS_RUNTIME_TOKEN || ''));
+
       - name: Install dependencies with vcpkg
         run: |
-          New-Item -Force -ItemType Directory "${{ env.vcpkg_path }}/triplets_overlay" | Out-Null
-          Set-Content -Path "${{ env.vcpkg_path }}/triplets_overlay/x64-windows-static-md-release.cmake" -Value @"
-set(VCPKG_TARGET_ARCHITECTURE x64)
-set(VCPKG_LIBRARY_LINKAGE static)
-set(VCPKG_CRT_LINKAGE dynamic)
-set(VCPKG_BUILD_TYPE release)
-"@
-          $packages = "boost-build:x64-windows-static-md-release", "openssl:x64-windows-static-md-release", "zlib:x64-windows-static-md-release"
+          New-Item -Force -ItemType File "${{ env.vcpkg_path }}/triplets_overlay/x64-windows-static-md-release.cmake"
+          Add-Content -Path "${{ env.vcpkg_path }}/triplets_overlay/x64-windows-static-md-release.cmake" `
+            -Value @("set(VCPKG_TARGET_ARCHITECTURE x64)",
+              "set(VCPKG_LIBRARY_LINKAGE static)",
+              "set(VCPKG_CRT_LINKAGE dynamic)",
+              "set(VCPKG_BUILD_TYPE release)")
+          $packages = "boost-build:x64-windows-static-md-release",
+            "openssl:x64-windows-static-md-release",
+            "zlib:x64-windows-static-md-release"
+          ${{ env.vcpkg_path }}/vcpkg.exe upgrade --no-dry-run --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay"
           ${{ env.vcpkg_path }}/vcpkg.exe install --binarysource="clear;x-gha,readwrite" --clean-after-build --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay" $packages
 
-      - name: Install Boost
+      - name: Install boost
         env:
           BOOST_MAJOR_VERSION: "1"
           BOOST_MINOR_VERSION: "86"
@@ -71,13 +80,10 @@ set(VCPKG_BUILD_TYPE release)
           }
           move "${{ github.workspace }}/../boost_*" "${{ env.boost_path }}"
           cd "${{ env.boost_path }}"
-          mkdir -Force lib
-          if (Test-Path "${{ env.vcpkg_path }}/installed/x64-windows-static-md-release/tools/boost-build/b2.exe") {
-            ${{ env.vcpkg_path }}/installed/x64-windows-static-md-release/tools/boost-build/b2.exe stage toolset=msvc --stagedir=.\ --with-headers
-          }
+          ${{ env.vcpkg_path }}/installed/x64-windows-static-md-release/tools/boost-build/b2.exe stage toolset=msvc --stagedir=.\ --with-headers
 
       - name: Install Qt
-        uses: jurplel/install-qt-action@v4.0.1
+        uses: jurplel/install-qt-action@v4
         with:
           version: "6.9.0"
           arch: win64_msvc2022_64
@@ -104,7 +110,6 @@ set(VCPKG_BUILD_TYPE release)
 
       - name: Prepare build artifacts (Portable Zip & Installer)
         id: prepare_artifacts
-        shell: pwsh
         run: |
           $buildDir = "upload/qBittorrent"
           mkdir $buildDir
@@ -118,7 +123,9 @@ set(VCPKG_BUILD_TYPE release)
           copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Sql.dll" $buildDir
           copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Svg.dll" $buildDir
           copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Widgets.dll" $buildDir
-          copy "${{ env.Qt_ROOT_DIR }}/bin/ "$buildDir/plugins/iconengines"
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Xml.dll" $buildDir
+          mkdir "$buildDir/plugins/iconengines"
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/iconengines/qsvgicon.dll" "$buildDir/plugins/iconengines"
           mkdir "$buildDir/plugins/imageformats"
           copy "${{ env.Qt_ROOT_DIR }}/plugins/imageformats/qico.dll" "$buildDir/plugins/imageformats"
           copy "${{ env.Qt_ROOT_DIR }}/plugins/imageformats/qsvg.dll" "$buildDir/plugins/imageformats"
@@ -131,21 +138,10 @@ set(VCPKG_BUILD_TYPE release)
           mkdir "$buildDir/plugins/tls"
           copy "${{ env.Qt_ROOT_DIR }}/plugins/tls/qschannelbackend.dll" "$buildDir/plugins/tls"
           
-          # Extract version and fix naming
-          $productVersion = (Get-Item "build/qbittorrent.exe").VersionInfo.ProductVersion
-          # Remove duplicate 'v' if present
-          $productVersion = $productVersion -replace '^v+', ''
-          # Insert hyphen before pre-release part if not present
-          $portableZipName = if ($productVersion -match '^(?<numver>\d+\.\d+\.\d+)([a-zA-Z].*)?$') {
-            $pre = $Matches[2]
-            if ($pre) {
-              "qBittorrent_Portable_win_x64_v$($Matches['numver'])-$($pre)_libt_${{ matrix.libt_version }}.zip"
-            } else {
-              "qBittorrent_Portable_win_x64_v$($Matches['numver'])_libt_${{ matrix.libt_version }}.zip"
-            }
-          } else {
-            "qBittorrent_Portable_win_x64_v${productVersion}_libt_${{ matrix.libt_version }}.zip"
-          }
+          # Fix: Strip any leading "v" and always add exactly one "v"
+          $qbtAppVersion = (Get-Item "build/qbittorrent.exe").VersionInfo.ProductVersion
+          $qbtAppVersion = $qbtAppVersion -replace '^v+', ''
+          $portableZipName = "qBittorrent_Portable_win_x64_v${qbtAppVersion}_libt_${{ matrix.libt_version }}.zip"
           Compress-Archive -Path $buildDir -DestinationPath "upload/$portableZipName" -Force
           echo "portableZipName=$portableZipName" >> $env:GITHUB_OUTPUT
 
@@ -168,20 +164,11 @@ set(VCPKG_BUILD_TYPE release)
           if ($null -ne $installerFile) {
               $originalFileName = $installerFile.BaseName
               $extension = $installerFile.Extension
-              # Remove duplicate 'v' if present and insert hyphen before pre-release label ($newBase -match '^(?<name>qbittorrent_win_x64_v)(?<numver>\d+\.\d+\.\d+)([a-zA-Z].*)?$') {
-                $pre = $Matches[3]
-                if ($pre) {
-                  $qbtBaseName = "${Matches['name']}${Matches['numver']}-${pre}"
-                } else {
-                  $qbtBaseName = "${Matches['name']}${Matches['numver']}"
-                }
-              } else {
-                $qbtBaseName = $originalFileName
-              }
-              $newInstallerFileName = "${qbtBaseName}_libt_${{ matrix.libt_version }}${extension}"
+              # Fix: Remove double v if present
+              $fixedName = $originalFileName -replace '^qbittorrent_win_x64_v+', 'qBittorrent_win_x64_v'
+              $newInstallerFileName = "${fixedName}_libt_${{ matrix.libt_version }}${extension}"
               $newFullPath = Join-Path -Path $installerFile.DirectoryName -ChildPath $newInstallerFileName
-              Rename-Item -Path $installerFile.FullName -NewName $newFullPath -Force
-              Write-Host "Successfully renamed installer to: $($newInstallerFileName)"
+              Rename-Item -Path $installerFile.FullName --Host "Successfully renamed installer to: $($newInstallerFileName)"
               echo "newInstallerFileName=$newInstallerFileName" >> $env:GITHUB_OUTPUT
           } else {
               Write-Warning "No qBittorrent installer file found to rename. Please check the 'Create installer' step output."
@@ -231,10 +218,12 @@ set(VCPKG_BUILD_TYPE release)
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             echo "release_tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "is_tag=true" >> "$GITHUB_OUTPUT"
           else
             refname="${GITHUB_REF#refs/heads/}"
             refname="${refname#refs/pull/}"
             echo "release_tag=${refname}-run-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create GitHub Release
