@@ -1,8 +1,11 @@
 name: Stale bot
 
 on:
-  schedule:
-    - cron: '0 0 * * *'
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '.github/workflows/**'
 
 permissions: {}
 
