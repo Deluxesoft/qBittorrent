@@ -1,6 +1,11 @@
 name: CI - Windows
 
-on: [pull_request, push]
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '.github/workflows/**'
 
 permissions: {}
 
