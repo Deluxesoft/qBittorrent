@@ -137,10 +137,10 @@ jobs:
           copy "${{ env.Qt_ROOT_DIR }}/plugins/styles/qmodernwindowsstyle.dll" "$buildDir/plugins/styles"
           mkdir "$buildDir/plugins/tls"
           copy "${{ env.Qt_ROOT_DIR }}/plugins/tls/qschannelbackend.dll" "$buildDir/plugins/tls"
-          
-          # Fix: Strip any leading "v" and always add exactly one "v"
+
+          # --- vv fix: add one line below ---
           $qbtAppVersion = (Get-Item "build/qbittorrent.exe").VersionInfo.ProductVersion
-          $qbtAppVersion = $qbtAppVersion -replace '^v+', ''
+          $qbtAppVersion = $qbtAppVersion -replace '^v+', '' # Remove any leading v's
           $portableZipName = "qBittorrent_Portable_win_x64_v${qbtAppVersion}_libt_${{ matrix.libt_version }}.zip"
           Compress-Archive -Path $buildDir -DestinationPath "upload/$portableZipName" -Force
           echo "portableZipName=$portableZipName" >> $env:GITHUB_OUTPUT
@@ -163,12 +163,15 @@ jobs:
           $installerFile = Get-ChildItem -Path "dist/windows" -Filter "qbittorrent_*.exe" | Select-Object -First 1
           if ($null -ne $installerFile) {
               $originalFileName = $installerFile.BaseName
+              # --- vv fix: add the line below ---
+              $originalFileName = $originalFileName -replace '(?<=qbittorrent_win_x64_)v+', 'v' # Ensure only one v after _x64_
               $extension = $installerFile.Extension
-              # Fix: Remove double v if present
-              $fixedName = $originalFileName -replace '^qbittorrent_win_x64_v+', 'qBittorrent_win_x64_v'
-              $newInstallerFileName = "${fixedName}_libt_${{ matrix.libt_version }}${extension}"
+              $match = $originalFileName -match '^(qbittorrent_win_x64_v\d+\.\d+\.\d+(\.\d+)?)(_.*)?$'
+              $qbtBaseName = if ($match) { $Matches[1] } else { $originalFileName }
+              $newInstallerFileName = "${qbtBaseName}_libt_${{ matrix.libt_version }}${extension}"
               $newFullPath = Join-Path -Path $installerFile.DirectoryName -ChildPath $newInstallerFileName
-              Rename-Item -Path $installerFile.FullName --Host "Successfully renamed installer to: $($newInstallerFileName)"
+              Rename-Item -Path $installerFile.FullName -NewName $newFullPath -Force
+              Write-Host "Successfully renamed installer to: $($newInstallerFileName)"
               echo "newInstallerFileName=$newInstallerFileName" >> $env:GITHUB_OUTPUT
           } else {
               Write-Warning "No qBittorrent installer file found to rename. Please check the 'Create installer' step output."
