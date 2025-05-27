@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -36,20 +37,33 @@ jobs:
         run: |
           if ((Get-Command "ninja.exe" -ErrorAction SilentlyContinue) -eq $null)
           {
-            choco install ninja
+             choco install ninja
           }
           where.exe ninja
           ninja --version
 
-      - name: Cache Boost
-        id: cache-boost
-        uses: actions/cache@v4
+      - name: Set variables for vcpkg
+        uses: actions/github-script@v7
         with:
-          path: ../boost
-          key: boost-1.86.0
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', (process.env.ACTIONS_CACHE_URL || ''));
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', (process.env.ACTIONS_RUNTIME_TOKEN || ''));
 
-      - name: Download and Install Boost (if not cached)
-        if: steps.cache-boost.outputs.cache-hit != 'true'
+      - name: Install dependencies with vcpkg
+        run: |
+          New-Item -Force -ItemType File "${{ env.vcpkg_path }}/triplets_overlay/x64-windows-static-md-release.cmake"
+          Add-Content -Path "${{ env.vcpkg_path }}/triplets_overlay/x64-windows-static-md-release.cmake" `
+            -Value @("set(VCPKG_TARGET_ARCHITECTURE x64)",
+              "set(VCPKG_LIBRARY_LINKAGE static)",
+              "set(VCPKG_CRT_LINKAGE dynamic)",
+              "set(VCPKG_BUILD_TYPE release)")
+          $packages = "boost-build:x64-windows-static-md-release",
+            "openssl:x64-windows-static-md-release",
+            "zlib:x64-windows-static-md-release"
+          ${{ env.vcpkg_path }}/vcpkg.exe upgrade --no-dry-run --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay"
+          ${{ env.vcpkg_path }}/vcpkg.exe install --binarysource="clear;x-gha,readwrite" --clean-after-build --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay" $packages
+
+      - name: Install boost
         env:
           BOOST_MAJOR_VERSION: "1"
           BOOST_MINOR_VERSION: "86"
@@ -66,25 +80,10 @@ jobs:
           }
           move "${{ github.workspace }}/../boost_*" "${{ env.boost_path }}"
           cd "${{ env.boost_path }}"
-          mkdir -Force lib
-          if (Test-Path "${{ env.vcpkg_path }}/installed/x64-windows-static-md-release/tools/boost-build/b2.exe") {
-            ${{ env.vcpkg_path }}/installed/x64-windows-static-md-release/tools/boost-build/b2.exe stage toolset=msvc --stagedir=.\ --with-headers
-          }
-
-      - name: Install dependencies with vcpkg
-        run: |
-          New-Item -Force -ItemType Directory "${{ env.vcpkg_path }}/triplets_overlay" | Out-Null
-          Set-Content -Path "${{ env.vcpkg_path }}/triplets_overlay/x64-windows-static-md-release.cmake" -Value @"
-set(VCPKG_TARGET_ARCHITECTURE x64)
-set(VCPKG_LIBRARY_LINKAGE static)
-set(VCPKG_CRT_LINKAGE dynamic)
-set(VCPKG_BUILD_TYPE release)
-"@
-          $packages = "boost-build:x64-windows-static-md-release", "openssl:x64-windows-static-md-release", "zlib:x64-windows-static-md-release"
-          ${{ env.vcpkg_path }}/vcpkg.exe install --binarysource="clear;x-gha,readwrite" --clean-after-build --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay" $packages
+          ${{ env.vcpkg_path }}/installed/x64-windows-static-md-release/tools/boost-build/b2.exe stage toolset=msvc --stagedir=.\ --with-headers
 
       - name: Install Qt
-        uses: jurplel/install-qt-action@v4.0.1
+        uses: jurplel/install-qt-action@v4
         with:
           version: "6.9.0"
           arch: win64_msvc2022_64
@@ -153,7 +152,7 @@ set(VCPKG_BUILD_TYPE release)
       - name: Create installer
         run: |
           7z x -o"dist/windows/" "dist/windows/NSISPlugins.zip"
-          makensis /DQBT_DIST_DIR="../../upload/QBittorrent" /WX dist/windows/qbittorrent.nsi
+          makensis /DQBT_DIST_DIR="../../upload/qBittorrent" /WX dist/windows/qbittorrent.nsi
 
       - name: Rename installer with Libtorrent version
         shell: pwsh
@@ -220,7 +219,9 @@ set(VCPKG_BUILD_TYPE release)
             echo "release_tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
             echo "is_tag=true" >> "$GITHUB_OUTPUT"
           else
-            echo "release_tag=${GITHUB_REF##*/}-run-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+            refname="${GITHUB_REF#refs/heads/}"
+            refname="${refname#refs/pull/}"
+            echo "release_tag=${refname}-run-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
             echo "is_tag=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -246,13 +247,3 @@ set(VCPKG_BUILD_TYPE release)
             For more detailed changes, please refer to the commit history.
           draft: false
           prerelease: ${{ steps.vars.outputs.is_tag == 'false' }}
-
-  lint-yaml:
-    name: Lint workflow YAML (optional)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install yamllint
-        run: pip install yamllint
-      - name: Lint workflows
-        run: yamllint .github/workflows/*.yml || true
