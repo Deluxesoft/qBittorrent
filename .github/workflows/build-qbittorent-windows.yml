@@ -258,6 +258,10 @@ jobs:
       - name: Checkout repository # Needed by softprops/action-gh-release to get tag info etc.
         uses: actions/checkout@v4
 
+      # IMPORTANT NEW STEP: Explicitly create the directory before downloading.
+      - name: Create downloaded_artifacts directory
+        run: mkdir -p downloaded_artifacts
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
