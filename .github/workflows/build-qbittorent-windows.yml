@@ -213,6 +213,7 @@ jobs:
 
       - name: Rename installer with Libtorrent version
         shell: pwsh # Use PowerShell Core
+        id: rename_installer_with_libtorrent_version # Add an ID to access output variables from this step
         run: |
           $installerFile = Get-ChildItem -Path "dist/windows" -Filter "qbittorrent_*.exe" | Select-Object -First 1
           if ($null -ne $installerFile) {
@@ -247,6 +248,7 @@ jobs:
             # If you want to include cmake debug files in the release too:
             # upload/cmake/
             
+---
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest # Lighter runner for release job
