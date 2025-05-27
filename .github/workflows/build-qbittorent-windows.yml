@@ -1,4 +1,4 @@
-name: Build and Release qBittorrent Installer
+name: Build and Release qBittorrent Installer with libtorrent version in name
 
 on:
   push:
