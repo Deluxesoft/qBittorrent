@@ -67,7 +67,6 @@ jobs:
           move "${{ github.workspace }}/../boost_*" "${{ env.boost_path }}"
           cd "${{ env.boost_path }}"
           mkdir -Force lib
-          # Build only headers (needed for vcpkg/libtorrent)
           if (Test-Path "${{ env.vcpkg_path }}/installed/x64-windows-static-md-release/tools/boost-build/b2.exe") {
             ${{ env.vcpkg_path }}/installed/x64-windows-static-md-release/tools/boost-build/b2.exe stage toolset=msvc --stagedir=.\ --with-headers
           }
