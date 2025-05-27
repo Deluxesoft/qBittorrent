@@ -54,8 +54,8 @@ jobs:
           Write-Host "Installing vcpkg dependencies for qBittorrent..."
           # Change to qBittorrent root directory for manifest installation
           cd $QB_ROOT_DIR
-          # Now, execute vcpkg from its directory, using the correct manifest mode syntax
-          "$VCPKG_REPO_DIR\vcpkg.exe" install --triplet x64-windows-static --recurse
+          # Execute vcpkg from its directory using the call operator for proper PowerShell parsing
+          & "$VCPKG_REPO_DIR\vcpkg.exe" install --triplet x64-windows-static --recurse
 
       - name: Manually Build and Install libtorrent
         shell: pwsh
