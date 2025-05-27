@@ -1,14 +1,13 @@
-name: Build qBittorrent Installer
+name: Build and Release qBittorrent Installer
 
 on:
   push:
-    branches:
-      - main # Keep 'main' as per your provided YAML. Change to 'master' if needed.
-    # Removed: paths-ignore: # Removing this ensures workflow changes trigger a run
-    #   - '.github/workflows/**'
-  workflow_dispatch: # Added to allow manual triggering from GitHub Actions tab
+    tags: # This workflow will now only run when a Git tag (e.g., v1.0.0, v4.6.5) is pushed
+      - 'v*.*.*'
+      - 'v*.*.*-*' # Allows for pre-release tags like v4.6.5-beta1
+  workflow_dispatch: # Keep manual trigger for convenience
 
-permissions: {} # No change
+permissions: {} # Default permissions
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -19,7 +18,7 @@ jobs:
     name: Build
     runs-on: windows-latest
     permissions:
-      actions: write
+      actions: write # Required for upload-artifact
 
     strategy:
       fail-fast: false
@@ -29,7 +28,7 @@ jobs:
     env:
       boost_path: "${{ github.workspace }}/../boost"
       libtorrent_path: "${{ github.workspace }}/../libtorrent"
-      vcpkg_path: "c:/vcpkg" # This path implies vcpkg is pre-installed on the runner, which is faster.
+      vcpkg_path: "c:/vcpkg"
 
     steps:
       - name: Checkout repository
@@ -76,7 +75,6 @@ jobs:
             "boost-build:x64-windows-static-md-release",
             "openssl:x64-windows-static-md-release",
             "zlib:x64-windows-static-md-release"
-          # Note: This workflow does not use vcpkg.json, but explicitly installs required ports.
           ${{ env.vcpkg_path }}/vcpkg.exe upgrade `
             --no-dry-run `
             --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay"
@@ -165,56 +163,138 @@ jobs:
           cmake --build build
           cmake --build build --target check
 
-      - name: Prepare build artifacts
+      - name: Prepare build artifacts (Portable Zip & Installer)
+        id: prepare_artifacts # Add an ID to easily access output variables from this step
         run: |
-          mkdir upload
-          mkdir upload/qBittorrent
-          copy build/qbittorrent.exe upload/qBittorrent
-          copy build/qbittorrent.pdb upload/qBittorrent
-          copy dist/windows/qt.conf upload/qBittorrent
+          $buildDir = "upload/qBittorrent"
+          mkdir $buildDir
+          copy build/qbittorrent.exe $buildDir
+          copy build/qbittorrent.pdb $buildDir
+          copy dist/windows/qt.conf $buildDir
           # runtimes
-          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Core.dll" upload/qBittorrent
-          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Gui.dll" upload/qBittorrent
-          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Network.dll" upload/qBittorrent
-          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Sql.dll" upload/qBittorrent
-          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Svg.dll" upload/qBittorrent
-          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Widgets.dll" upload/qBittorrent
-          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Xml.dll" upload/qBittorrent
-          mkdir upload/qBittorrent/plugins/iconengines
-          copy "${{ env.Qt_ROOT_DIR }}/plugins/iconengines/qsvgicon.dll" upload/qBittorrent/plugins/iconengines
-          mkdir upload/qBittorrent/plugins/imageformats
-          copy "${{ env.Qt_ROOT_DIR }}/plugins/imageformats/qico.dll" upload/qBittorrent/plugins/imageformats
-          copy "${{ env.Qt_ROOT_DIR }}/plugins/imageformats/qsvg.dll" upload/qBittorrent/plugins/imageformats
-          mkdir upload/qBittorrent/plugins/platforms
-          copy "${{ env.Qt_ROOT_DIR }}/plugins/platforms/qwindows.dll" upload/qBittorrent/plugins/platforms
-          mkdir upload/qBittorrent/plugins/sqldrivers
-          copy "${{ env.Qt_ROOT_DIR }}/plugins/sqldrivers/qsqlite.dll" upload/qBittorrent/plugins/sqldrivers
-          mkdir upload/qBittorrent/plugins/styles
-          copy "${{ env.Qt_ROOT_DIR }}/plugins/styles/qmodernwindowsstyle.dll" upload/qBittorrent/plugins/styles
-          mkdir upload/qBittorrent/plugins/tls
-          copy "${{ env.Qt_ROOT_DIR }}/plugins/tls/qschannelbackend.dll" upload/qBittorrent/plugins/tls
-          # cmake additionals
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Core.dll" $buildDir
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Gui.dll" $buildDir
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Network.dll" $buildDir
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Sql.dll" $buildDir
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Svg.dll" $buildDir
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Widgets.dll" $buildDir
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Xml.dll" $buildDir
+          mkdir "$buildDir/plugins/iconengines"
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/iconengines/qsvgicon.dll" "$buildDir/plugins/iconengines"
+          mkdir "$buildDir/plugins/imageformats"
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/imageformats/qico.dll" "$buildDir/plugins/imageformats"
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/imageformats/qsvg.dll" "$buildDir/plugins/imageformats"
+          mkdir "$buildDir/plugins/platforms"
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/platforms/qwindows.dll" "$buildDir/plugins/platforms"
+          mkdir "$buildDir/plugins/sqldrivers"
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/sqldrivers/qsqlite.dll" "$buildDir/plugins/sqldrivers"
+          mkdir "$buildDir/plugins/styles"
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/styles/qmodernwindowsstyle.dll" "$buildDir/plugins/styles"
+          mkdir "$buildDir/plugins/tls"
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/tls/qschannelbackend.dll" "$buildDir/plugins/tls"
+          
+          # Get qBittorrent app version to name the portable zip
+          $qbtAppVersion = (Get-Item "build/qbittorrent.exe").VersionInfo.ProductVersion
+          $portableZipName = "qBittorrent_Portable_win_x64_v${qbtAppVersion}_libt_${{ matrix.libt_version }}.zip"
+          Compress-Archive -Path $buildDir -DestinationPath "upload/$portableZipName" -Force
+          echo "portableZipName=$portableZipName" >> $env:GITHUB_OUTPUT # Make portableZipName available to subsequent steps
+
+          # cmake additionals (if these are also meant for release, keep them)
           mkdir upload/cmake
           copy build/compile_commands.json upload/cmake
           copy build/target_graph.dot upload/cmake
           mkdir upload/cmake/libtorrent
           copy ${{ env.libtorrent_path }}/build/compile_commands.json upload/cmake/libtorrent
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: qBittorrent-CI_Windows-x64_libtorrent-${{ matrix.libt_version }}
-          path: upload
-
       - name: Create installer
         run: |
           7z x -o"dist/windows/" "dist/windows/NSISPlugins.zip"
-          # NSIS script 'qbittorrent.nsi' handles the final installer filename including version
           makensis /DQBT_DIST_DIR="../../upload/qBittorrent" /WX dist/windows/qbittorrent.nsi
 
-      - name: Upload installer
+      - name: Rename installer with Libtorrent version
+        shell: pwsh # Use PowerShell Core
+        run: |
+          $installerFile = Get-ChildItem -Path "dist/windows" -Filter "qbittorrent_*.exe" | Select-Object -First 1
+          if ($null -ne $installerFile) {
+              $originalFileName = $installerFile.BaseName
+              $extension = $installerFile.Extension
+
+              # Attempt to extract the qBittorrent version part from the original filename.
+              # This regex will capture the part up to the version number, including the 'v'.
+              $match = $originalFileName -match '^(qbittorrent_win_x64_v\d+\.\d+\.\d+(\.\d+)?)(_.*)?$'
+              $qbtBaseName = if ($match) { $Matches[1] } else { $originalFileName }
+
+              # Construct the new filename including the libtorrent version
+              $newInstallerFileName = "${qbtBaseName}_libt_${{ matrix.libt_version }}${extension}"
+              $newFullPath = Join-Path -Path $installerFile.DirectoryName -ChildPath $newInstallerFileName
+              
+              Rename-Item -Path $installerFile.FullName -NewName $newFullPath -Force
+              Write-Host "Successfully renamed installer to: $($newInstallerFileName)"
+              echo "newInstallerFileName=$newInstallerFileName" >> $env:GITHUB_OUTPUT # Make newInstallerFileName available
+          } else {
+              Write-Warning "No qBittorrent installer file found to rename. Please check the 'Create installer' step output."
+              exit 1 # Fail the step if the installer wasn't found
+          }
+
+      - name: Upload all build assets for release
         uses: actions/upload-artifact@v4
         with:
-          # This name is already descriptive and includes libtorrent version
-          name: qBittorrent-CI_Windows-x64_libtorrent-${{ matrix.libt_version }}-setup
-          path: dist/windows/qbittorrent_*_setup.exe # Catches the dynamically named installer
+          # Each matrix combination will upload a single artifact package containing its specific installer and portable zip
+          name: qBittorrent-Build-Assets-libt-${{ matrix.libt_version }}
+          path: |
+            upload/${{ steps.prepare_artifacts.outputs.portableZipName }} # Portable zip from prepare_artifacts step
+            dist/windows/${{ steps.rename_installer_with_libtorrent_version.outputs.newInstallerFileName }} # Renamed installer from rename step
+            # If you want to include cmake debug files in the release too:
+            # upload/cmake/
+            
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest # Lighter runner for release job
+    needs: ci # This job depends on the 'ci' job completing successfully
+    permissions:
+      contents: write # Essential permission to create releases
+
+    steps:
+      - name: Checkout repository # Needed by softprops/action-gh-release to get tag info etc.
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_artifacts # All artifacts from both matrix jobs will be downloaded here into subdirectories
+
+      - name: Collect release assets
+        id: collect_assets
+        run: |
+          mkdir release_assets
+          # Find all .exe and .zip files generated by the CI job and move them to release_assets
+          # Adjust the 'find' command's path if your artifacts are nested deeper
+          find downloaded_artifacts -type f -name 'qbittorrent_*.exe' -exec mv {} release_assets/ \;
+          find downloaded_artifacts -type f -name 'qBittorrent_Portable_*.zip' -exec mv {} release_assets/ \;
+          
+          # List collected assets for debugging
+          echo "Collected Assets:"
+          ls -R release_assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This is automatically provided by GitHub Actions
+        with:
+          files: release_assets/* # Attach all files in the 'release_assets' directory
+          tag_name: ${{ github.ref_name }} # Uses the pushed tag name (e.g., v1.0.0)
+          name: Release ${{ github.ref_name }} # Name of the release
+          body: |
+            ## qBittorrent Release ${{ github.ref_name }}
+
+            This release includes Windows x64 builds with the following libtorrent versions:
+            * **2.0.11**
+            * **1.2.20**
+
+            ### Assets:
+            * **Installers** (e.g., `qbittorrent_win_x64_v<qbt_version>_libt_2.0.11.exe`)
+            * **Portable versions** (e.g., `qBittorrent_Portable_win_x64_v<qbt_version>_libt_2.0.11.zip`)
+
+            For more detailed changes, please refer to the commit history.
+          draft: false # Set to true if you want to create a draft release first
+          prerelease: false # Set to true for pre-release versions (e.g., v1.0.0-beta)
