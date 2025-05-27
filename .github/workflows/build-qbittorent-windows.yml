@@ -1,169 +1,220 @@
 name: Build qBittorrent Installer
 
 on:
-  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
-  push:              # Also triggers on pushes
+  push:
     branches:
-      - master       # Trigger on pushes to the 'master' branch
+      - main # Keep 'main' as per your provided YAML. Change to 'master' if needed.
+    # Removed: paths-ignore: # Removing this ensures workflow changes trigger a run
+    #   - '.github/workflows/**'
+  workflow_dispatch: # Added to allow manual triggering from GitHub Actions tab
+
+permissions: {} # No change
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.head_ref != '' }}
 
 jobs:
-  build:
-    runs-on: windows-latest # Use a Windows runner for Windows installer
+  ci:
+    name: Build
+    runs-on: windows-latest
+    permissions:
+      actions: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        libt_version: ["2.0.11", "1.2.20"]
+
+    env:
+      boost_path: "${{ github.workspace }}/../boost"
+      libtorrent_path: "${{ github.workspace }}/../libtorrent"
+      vcpkg_path: "c:/vcpkg" # This path implies vcpkg is pre-installed on the runner, which is faster.
 
     steps:
-      - name: Checkout qBittorrent Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          repository: 'qbittorrent/qBittorrent' # Specify the original qBittorrent repo
-          ref: 'master' # Or any specific branch/tag you want to build (e.g., 'release-4.6.4')
-          path: qBittorrent # Checkout into a specific directory
+          persist-credentials: false
 
-      - name: Set up MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1 # Initializes the Visual Studio development environment variables
+      - name: Setup devcmd
+        uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x' # Use a recent Python 3 version
-
-      - name: Cache vcpkg dependencies
-        uses: actions/cache@v4
-        id: vcpkg-cache
-        with:
-          path: D:\a\qBittorrent\qBittorrent/vcpkg_repo/installed # Cache the installed packages
-          key: ${{ runner.os }}-vcpkg-${{ hashFiles('D:\a\qBittorrent\qBittorrent\vcpkg.json') }} # Key based on OS and vcpkg manifest
-
-      - name: Install vcpkg dependencies
-        shell: pwsh
+      - name: Install build tools
         run: |
-          $VCPKG_REPO_DIR = "D:\a\qBittorrent\qBittorrent/vcpkg_repo"
-          $QB_ROOT_DIR = "D:\a\qBittorrent\qBittorrent" # Define qBittorrent root directory where vcpkg.json is located
-          New-Item -ItemType Directory -Force -Path $VCPKG_REPO_DIR
-
-          if (-not (Test-Path "$VCPKG_REPO_DIR\.git")) {
-            Write-Host "Cloning vcpkg into $VCPKG_REPO_DIR..."
-            git clone https://github.com/microsoft/vcpkg.git $VCPKG_REPO_DIR
-          } else {
-            Write-Host "vcpkg repository already exists, skipping clone."
+          if ((Get-Command "ninja.exe" -ErrorAction SilentlyContinue) -eq $null)
+          {
+             choco install ninja
           }
+          where.exe ninja
+          ninja --version
 
-          cd $VCPKG_REPO_DIR # Change to vcpkg directory to bootstrap
-          Write-Host "Bootstrapping vcpkg..."
-          .\bootstrap-vcpkg.bat
+      # https://learn.microsoft.com/en-us/vcpkg/users/binarycaching#gha
+      - name: Set variables for vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', (process.env.ACTIONS_CACHE_URL || ''));
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', (process.env.ACTIONS_RUNTIME_TOKEN || ''));
 
-          Write-Host "Installing vcpkg dependencies for qBittorrent..."
-          # Execute vcpkg from its directory, explicitly specifying the manifest root
-          & "$VCPKG_REPO_DIR\vcpkg.exe" install --triplet x64-windows-static --recurse --x-manifest-root "$QB_ROOT_DIR"
+      - name: Install dependencies with vcpkg
+        run: |
+          # create our own triplet
+          New-Item `
+            -Force `
+            -ItemType File `
+            -Path "${{ env.vcpkg_path }}/triplets_overlay/x64-windows-static-md-release.cmake"
+          # OpenSSL isn't compatible with `/guard:cf` flag so we omit it for now, see: https://github.com/openssl/openssl/issues/22554
+          Add-Content `
+            -Path "${{ env.vcpkg_path }}/triplets_overlay/x64-windows-static-md-release.cmake" `
+            -Value @("set(VCPKG_TARGET_ARCHITECTURE x64)",
+              "set(VCPKG_LIBRARY_LINKAGE static)",
+              "set(VCPKG_CRT_LINKAGE dynamic)",
+              "set(VCPKG_BUILD_TYPE release)")
+          # clear buildtrees after each package installation to reduce disk space requirements
+          $packages = `
+            "boost-build:x64-windows-static-md-release",
+            "openssl:x64-windows-static-md-release",
+            "zlib:x64-windows-static-md-release"
+          # Note: This workflow does not use vcpkg.json, but explicitly installs required ports.
+          ${{ env.vcpkg_path }}/vcpkg.exe upgrade `
+            --no-dry-run `
+            --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay"
+          ${{ env.vcpkg_path }}/vcpkg.exe install `
+            --binarysource="clear;x-gha,readwrite" `
+            --clean-after-build `
+            --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay" `
+            $packages
 
-      - name: Manually Build and Install libtorrent
-        shell: pwsh
+      - name: Install boost
         env:
-          VCPKG_REPO_DIR: D:\a\qBittorrent\qBittorrent/vcpkg_repo
-          LIBTORRENT_SOURCE_DIR: D:\a\qBittorrent\qBittorrent/libtorrent_source
-          LIBTORRENT_INSTALL_DIR: D:\a\qBittorrent\qBittorrent/libtorrent_install
+          BOOST_MAJOR_VERSION: "1"
+          BOOST_MINOR_VERSION: "86"
+          BOOST_PATCH_VERSION: "0"
         run: |
-          Write-Host "Preparing for manual libtorrent build."
-
-          # Create directories
-          New-Item -ItemType Directory -Force -Path $env:LIBTORRENT_SOURCE_DIR
-          New-Item -ItemType Directory -Force -Path $env:LIBTORRENT_INSTALL_DIR
-
-          # Clone libtorrent repository
-          if (-not (Test-Path "$env:LIBTORRENT_SOURCE_DIR\.git")) {
-            Write-Host "Cloning libtorrent into $env:LIBTORRENT_SOURCE_DIR..."
-            git clone https://github.com/arvidn/libtorrent.git $env:LIBTORRENT_SOURCE_DIR
-          } else {
-            Write-Host "Libtorrent source directory already exists, skipping clone."
+          $boost_url="https://archives.boost.io/release/${{ env.BOOST_MAJOR_VERSION }}.${{ env.BOOST_MINOR_VERSION }}.${{ env.BOOST_PATCH_VERSION }}/source/boost_${{ env.BOOST_MAJOR_VERSION }}_${{ env.BOOST_MINOR_VERSION }}_${{ env.BOOST_PATCH_VERSION }}.tar.gz"
+          $boost_url2="https://sourceforge.net/projects/boost/files/boost/${{ env.BOOST_MAJOR_VERSION }}.${{ env.BOOST_MINOR_VERSION }}.${{ env.BOOST_PATCH_VERSION }}/boost_${{ env.BOOST_MAJOR_VERSION }}_${{ env.BOOST_MINOR_VERSION }}_${{ env.BOOST_PATCH_VERSION }}.tar.gz"
+          curl -L -o "${{ runner.temp }}/boost.tar.gz" "$boost_url"
+          tar -xf "${{ runner.temp }}/boost.tar.gz" -C "${{ github.workspace }}/.."
+          if ($LastExitCode -ne 0)
+          {
+            curl -L -o "${{ runner.temp }}/boost.tar.gz" "$boost_url2"
+            tar -xf "${{ runner.temp }}/boost.tar.gz" -C "${{ github.workspace }}/.."
           }
+          move "${{ github.workspace }}/../boost_*" "${{ env.boost_path }}"
+          cd "${{ env.boost_path }}"
+          #.\bootstrap.bat
+          ${{ env.vcpkg_path }}/installed/x64-windows-static-md-release/tools/boost-build/b2.exe `
+            stage `
+            toolset=msvc `
+            --stagedir=.\ `
+            --with-headers
 
-          cd $env:LIBTORRENT_SOURCE_DIR
-          Write-Host "Checking out RC_2_0 branch for libtorrent (newer series)..."
-          git checkout RC_2_0
-          git pull # Ensure it's up-to-date with the chosen branch
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.9.0"
+          arch: win64_msvc2022_64
+          archives: qtbase qtsvg qttools
+          cache: true
 
-          Write-Host "Initializing and updating libtorrent submodules..."
-          git submodule update --init --recursive
-
-          Write-Host "Configuring libtorrent with CMake..."
-          cmake -G "Ninja" -B build `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_REPO_DIR\scripts\buildsystems\vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET="x64-windows-static" `
+      - name: Install libtorrent
+        run: |
+          git clone `
+            --branch v${{ matrix.libt_version }} `
+            --depth 1 `
+            --recurse-submodules `
+            https://github.com/arvidn/libtorrent.git `
+            ${{ env.libtorrent_path }}
+          cd ${{ env.libtorrent_path }}
+          $env:CXXFLAGS+=" /guard:cf"
+          $env:LDFLAGS+=" /guard:cf"
+          cmake `
+            -B build `
+            -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DCMAKE_CXX_STANDARD=20 `
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON `
+            -DCMAKE_INSTALL_PREFIX="${{ env.libtorrent_path }}/install" `
+            -DCMAKE_TOOLCHAIN_FILE="${{ env.vcpkg_path }}/scripts/buildsystems/vcpkg.cmake" `
+            -DBOOST_ROOT="${{ env.boost_path }}/lib/cmake" `
             -DBUILD_SHARED_LIBS=OFF `
-            -Dstatic_runtime=ON `
-            -Ddeprecated-functions=ON
-          Write-Host "Libtorrent configuration complete."
-
-          Write-Host "Building libtorrent..."
-          cmake --build build --config Release
-          Write-Host "Libtorrent build complete."
-
-          Write-Host "Installing libtorrent to $env:LIBTORRENT_INSTALL_DIR..."
-          cmake --install build --prefix $env:LIBTORRENT_INSTALL_DIR
-          Write-Host "Libtorrent installation complete."
-
-          # Output the libtorrent install path for the next step
-          echo "LIBTORRENT_INSTALL_DIR_OUTPUT=$env:LIBTORRENT_INSTALL_DIR" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            -Ddeprecated-functions=OFF `
+            -Dstatic_runtime=OFF `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md-release
+          cmake --build build
+          cmake --install build
 
       - name: Build qBittorrent
-        shell: pwsh
-        env:
-          LIBTORRENT_INSTALL_DIR_FROM_PREV: ${{ steps.libtorrent_build.outputs.LIBTORRENT_INSTALL_DIR_OUTPUT }}
-          VCPKG_ROOT: D:\a\qBittorrent\qBittorrent/vcpkg_repo
-          VCPKG_TARGET_TRIPLET: x64-windows-static
-          QB_BUILD_DIR: D:\a\qBittorrent\qBittorrent/build_qbittorrent
         run: |
-          Write-Host "Configuring qBittorrent with CMake..."
-          $env:CMAKE_PREFIX_PATH = "$env:LIBTORRENT_INSTALL_DIR_FROM_PREV;$env:CMAKE_PREFIX_PATH"
+          $env:CXXFLAGS+="/DQT_FORCE_ASSERTS /WX"
+          cmake `
+            -B build `
+            -G "Ninja" `
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON `
+            -DCMAKE_TOOLCHAIN_FILE="${{ env.vcpkg_path }}/scripts/buildsystems/vcpkg.cmake" `
+            -DBOOST_ROOT="${{ env.boost_path }}/lib/cmake" `
+            -DLibtorrentRasterbar_DIR="${{ env.libtorrent_path }}/install/lib/cmake/LibtorrentRasterbar" `
+            -DMSVC_RUNTIME_DYNAMIC=ON `
+            -DTESTING=ON `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md-release `
+            -DVERBOSE_CONFIGURE=ON `
+            --graphviz=build/target_graph.dot
+          cmake --build build --target qbt_update_translations
+          cmake --build build
+          cmake --build build --target check
 
-          cd D:\a\qBittorrent\qBittorrent
-
-          cmake -G "Ninja" -B $env:QB_BUILD_DIR `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=$env:VCPKG_TARGET_TRIPLET `
-            -DBOOST_ASIO_USE_IOCP=ON `
-            -DQT_STATIC_BUILD=ON `
-            -DQT_LTCG=ON `
-            -DLIBTP_QT=ON `
-            -DBUILD_GUI=ON `
-            -DWEBUITESTS=OFF `
-            -DSTACK_PROTECTOR=ON `
-            -DQT_VERSION=6
-          Write-Host "qBittorrent configuration complete."
-
-          Write-Host "Building qBittorrent..."
-          cmake --build $env:QB_BUILD_DIR --config Release
-          Write-Host "qBittorrent build complete."
-
-      - name: Generate Inno Setup Installer
-        shell: pwsh
-        env:
-          QB_BUILD_DIR: D:\a\qBittorrent\qBittorrent/build_qbittorrent
-          QB_VERSION: master
+      - name: Prepare build artifacts
         run: |
-          Write-Host "Generating Inno Setup Installer..."
-          $installerOutput = "$env:GITHUB_WORKSPACE/qbittorrent_installer.exe"
-          $innoSetupExe = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          mkdir upload
+          mkdir upload/qBittorrent
+          copy build/qbittorrent.exe upload/qBittorrent
+          copy build/qbittorrent.pdb upload/qBittorrent
+          copy dist/windows/qt.conf upload/qBittorrent
+          # runtimes
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Core.dll" upload/qBittorrent
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Gui.dll" upload/qBittorrent
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Network.dll" upload/qBittorrent
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Sql.dll" upload/qBittorrent
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Svg.dll" upload/qBittorrent
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Widgets.dll" upload/qBittorrent
+          copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Xml.dll" upload/qBittorrent
+          mkdir upload/qBittorrent/plugins/iconengines
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/iconengines/qsvgicon.dll" upload/qBittorrent/plugins/iconengines
+          mkdir upload/qBittorrent/plugins/imageformats
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/imageformats/qico.dll" upload/qBittorrent/plugins/imageformats
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/imageformats/qsvg.dll" upload/qBittorrent/plugins/imageformats
+          mkdir upload/qBittorrent/plugins/platforms
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/platforms/qwindows.dll" upload/qBittorrent/plugins/platforms
+          mkdir upload/qBittorrent/plugins/sqldrivers
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/sqldrivers/qsqlite.dll" upload/qBittorrent/plugins/sqldrivers
+          mkdir upload/qBittorrent/plugins/styles
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/styles/qmodernwindowsstyle.dll" upload/qBittorrent/plugins/styles
+          mkdir upload/qBittorrent/plugins/tls
+          copy "${{ env.Qt_ROOT_DIR }}/plugins/tls/qschannelbackend.dll" upload/qBittorrent/plugins/tls
+          # cmake additionals
+          mkdir upload/cmake
+          copy build/compile_commands.json upload/cmake
+          copy build/target_graph.dot upload/cmake
+          mkdir upload/cmake/libtorrent
+          copy ${{ env.libtorrent_path }}/build/compile_commands.json upload/cmake/libtorrent
 
-          if (-not (Test-Path $innoSetupExe)) {
-              throw "Inno Setup compiler not found at $innoSetupExe"
-          }
-
-          $issFile = "D:\a\qBittorrent\qBittorrent\dist\qBittorrent.iss"
-          if (-not (Test-Path $issFile)) {
-              throw "qBittorrent Inno Setup script not found at $issFile"
-          }
-
-          $InstallerOutputDir = "$env:GITHUB_WORKSPACE/installers"
-          New-Item -ItemType Directory -Force -Path $InstallerOutputDir
-
-          & "$innoSetupExe" /o"$InstallerOutputDir" /dVERSION="$env:QB_VERSION" /dBUILD_DIR="$env:QB_BUILD_DIR" /dOUTPUT_BASE_NAME="qbittorrent_v${env:QB_VERSION}_x64_setup" "$issFile"
-          Write-Host "Installer generation complete."
-
-      - name: Upload Installer Artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: qBittorrent-Installer
-          path: ${{ github.workspace }}/installers/*.exe
-          retention-days: 7
+          name: qBittorrent-CI_Windows-x64_libtorrent-${{ matrix.libt_version }}
+          path: upload
+
+      - name: Create installer
+        run: |
+          7z x -o"dist/windows/" "dist/windows/NSISPlugins.zip"
+          # NSIS script 'qbittorrent.nsi' handles the final installer filename including version
+          makensis /DQBT_DIST_DIR="../../upload/qBittorrent" /WX dist/windows/qbittorrent.nsi
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          # This name is already descriptive and includes libtorrent version
+          name: qBittorrent-CI_Windows-x64_libtorrent-${{ matrix.libt_version }}-setup
+          path: dist/windows/qbittorrent_*_setup.exe # Catches the dynamically named installer
