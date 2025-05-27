@@ -7,7 +7,7 @@ on:
     tags: # This will trigger the workflow for releases when a tag is pushed
       - 'v*.*.*' # Matches tags like v1.0.0, v1.2.3, etc.
       - 'v*.*.*-*' # Allows for pre-release tags like v4.6.5-beta1
-  # Removed: workflow_dispatch: # Manual triggering is now disabled
+  workflow_dispatch: # Keep manual trigger for convenience
 
 permissions: {} # Default permissions
 
