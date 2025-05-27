@@ -2,6 +2,9 @@ name: Build qBittorrent Installer
 
 on:
   workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+  push:              # Also triggers on pushes
+    branches:
+      - master       # Trigger on pushes to the 'master' branch
 
 jobs:
   build:
@@ -34,6 +37,7 @@ jobs:
         shell: pwsh
         run: |
           $VCPKG_REPO_DIR = "D:\a\qBittorrent\qBittorrent/vcpkg_repo"
+          $QB_ROOT_DIR = "D:\a\qBittorrent\qBittorrent" # Define qBittorrent root directory where vcpkg.json is located
           New-Item -ItemType Directory -Force -Path $VCPKG_REPO_DIR
 
           if (-not (Test-Path "$VCPKG_REPO_DIR\.git")) {
@@ -43,15 +47,15 @@ jobs:
             Write-Host "vcpkg repository already exists, skipping clone."
           }
 
-          cd $VCPKG_REPO_DIR
+          cd $VCPKG_REPO_DIR # Change to vcpkg directory to bootstrap
           Write-Host "Bootstrapping vcpkg..."
-          .\bootstrap-vcpkg.bat # Or bootstrap-vcpkg.sh for Linux/macOS
+          .\bootstrap-vcpkg.bat
 
           Write-Host "Installing vcpkg dependencies for qBittorrent..."
-          # Install dependencies based on qBittorrent's vcpkg.json
-          # Note: Adjust triplet if building for a different target (e.g., x86-windows-static)
-          # We're using x64-windows-static as per qBittorrent's build instructions for official builds
-          .\vcpkg.exe install --triplet x64-windows-static --recurse --x-set-installed D:\a\qBittorrent\qBittorrent # Use qBittorrent's vcpkg.json
+          # Change to qBittorrent root directory for manifest installation
+          cd $QB_ROOT_DIR
+          # Now, execute vcpkg from its directory, using the correct manifest mode syntax
+          "$VCPKG_REPO_DIR\vcpkg.exe" install --triplet x64-windows-static --recurse
 
       - name: Manually Build and Install libtorrent
         shell: pwsh
@@ -76,14 +80,11 @@ jobs:
 
           cd $env:LIBTORRENT_SOURCE_DIR
           Write-Host "Checking out RC_2_0 branch for libtorrent (newer series)..."
-          # If you need libtorrent 1.2.x series, change 'RC_2_0' to 'RC_1_2'
           git checkout RC_2_0
           git pull # Ensure it's up-to-date with the chosen branch
 
-          # --- FIX: Initialize and update submodules ---
           Write-Host "Initializing and updating libtorrent submodules..."
           git submodule update --init --recursive
-          # ---------------------------------------------
 
           Write-Host "Configuring libtorrent with CMake..."
           cmake -G "Ninja" -B build `
@@ -92,7 +93,7 @@ jobs:
             -DVCPKG_TARGET_TRIPLET="x64-windows-static" `
             -DBUILD_SHARED_LIBS=OFF `
             -Dstatic_runtime=ON `
-            -Ddeprecated-functions=ON # Enable for wider compatibility with qBittorrent
+            -Ddeprecated-functions=ON
           Write-Host "Libtorrent configuration complete."
 
           Write-Host "Building libtorrent..."
@@ -109,16 +110,12 @@ jobs:
       - name: Build qBittorrent
         shell: pwsh
         env:
-          LIBTORRENT_INSTALL_DIR_FROM_PREV: ${{ steps.libtorrent_build.outputs.LIBTORRENT_INSTALL_DIR_OUTPUT }} # Get path from previous step
-          VCPKG_ROOT: D:\a\qBittorrent\qBittorrent/vcpkg_repo # Set VCPKG_ROOT for qBittorrent build
-          VCPKG_TARGET_TRIPLET: x64-windows-static # Specify triplet for qBittorrent build
+          LIBTORRENT_INSTALL_DIR_FROM_PREV: ${{ steps.libtorrent_build.outputs.LIBTORRENT_INSTALL_DIR_OUTPUT }}
+          VCPKG_ROOT: D:\a\qBittorrent\qBittorrent/vcpkg_repo
+          VCPKG_TARGET_TRIPLET: x64-windows-static
           QB_BUILD_DIR: D:\a\qBittorrent\qBittorrent/build_qbittorrent
         run: |
           Write-Host "Configuring qBittorrent with CMake..."
-          # Set LIBTORRENT_INSTALL_DIR as an environment variable for qBittorrent's CMake
-          # Or pass it directly via -D, depending on how qBittorrent's CMake expects it
-          # qBittorrent often uses FIND_PACKAGE(libtorrent) which will look in VCPKG_ROOT
-          # and possibly CMAKE_PREFIX_PATH. Let's ensure CMAKE_PREFIX_PATH includes our custom install
           $env:CMAKE_PREFIX_PATH = "$env:LIBTORRENT_INSTALL_DIR_FROM_PREV;$env:CMAKE_PREFIX_PATH"
 
           cd D:\a\qBittorrent\qBittorrent
@@ -134,7 +131,7 @@ jobs:
             -DBUILD_GUI=ON `
             -DWEBUITESTS=OFF `
             -DSTACK_PROTECTOR=ON `
-            -DQT_VERSION=6 # Specify Qt6 for newer builds
+            -DQT_VERSION=6
           Write-Host "qBittorrent configuration complete."
 
           Write-Host "Building qBittorrent..."
@@ -145,37 +142,24 @@ jobs:
         shell: pwsh
         env:
           QB_BUILD_DIR: D:\a\qBittorrent\qBittorrent/build_qbittorrent
-          QB_VERSION: master # Or extract from qBittorrent source if desired
+          QB_VERSION: master
         run: |
           Write-Host "Generating Inno Setup Installer..."
-          # Inno Setup is pre-installed on windows-latest runners
-
-          # Define installer output path
           $installerOutput = "$env:GITHUB_WORKSPACE/qbittorrent_installer.exe"
-
-          # Run the Inno Setup script.
-          # qBittorrent's source contains an Inno Setup script in the 'dist' directory.
-          # We need to pass the build directory to it.
-          # Find the Inno Setup executable. It's usually in C:\Program Files (x86)\Inno Setup 6\ISCC.exe
           $innoSetupExe = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
           if (-not (Test-Path $innoSetupExe)) {
               throw "Inno Setup compiler not found at $innoSetupExe"
           }
 
-          # The Inno Setup script likely expects the build directory as a parameter or an environment variable.
-          # We'll use a common approach: passing defines to ISCC.exe
-          # Adjust the path to the qBittorrent dist/qBittorrent.iss if necessary based on the repo structure
           $issFile = "D:\a\qBittorrent\qBittorrent\dist\qBittorrent.iss"
           if (-not (Test-Path $issFile)) {
               throw "qBittorrent Inno Setup script not found at $issFile"
           }
 
-          # Define the output directory for the installer within the runner's workspace
           $InstallerOutputDir = "$env:GITHUB_WORKSPACE/installers"
           New-Item -ItemType Directory -Force -Path $InstallerOutputDir
 
-          # Execute Inno Setup compiler
           & "$innoSetupExe" /o"$InstallerOutputDir" /dVERSION="$env:QB_VERSION" /dBUILD_DIR="$env:QB_BUILD_DIR" /dOUTPUT_BASE_NAME="qbittorrent_v${env:QB_VERSION}_x64_setup" "$issFile"
           Write-Host "Installer generation complete."
 
@@ -183,5 +167,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: qBittorrent-Installer
-          path: ${{ github.workspace }}/installers/*.exe # Adjust path if the installer name or location differs
-          retention-days: 7 # Keep the artifact for 7 days
+          path: ${{ github.workspace }}/installers/*.exe
+          retention-days: 7
