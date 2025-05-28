@@ -1,3 +1,6 @@
+# (modified for provenance verification)
+# qBittorrent yml for release (based on ci-windows.yml and the libtorrent version it was built upon is reflected in the exe name):
+
 name: Build and Release qBittorrent Installer
 
 on:
@@ -6,7 +9,7 @@ on:
 
 permissions:
   contents: write
-  actions: write
+  id-token: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -230,7 +233,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
