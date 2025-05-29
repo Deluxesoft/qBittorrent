@@ -254,3 +254,4 @@ jobs:
             For more detailed changes, please refer to the commit history.
           draft: false
           prerelease: false
+          generate_release_provenance: true
