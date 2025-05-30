@@ -221,15 +221,15 @@ jobs:
           fi
 
       - name: Set release tag and type
-        id: vars
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-  echo "release_tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-else
-  echo "::error::This workflow must be triggered by a tag push to create a provenance badge."
-  exit 1
-fi
+  id: vars
+  shell: bash
+  run: |
+    if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+      echo "release_tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+    else
+      echo "::error::This workflow must be triggered by a tag push to create a provenance badge."
+      exit 1
+    fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2.1.0
