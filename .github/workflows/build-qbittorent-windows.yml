@@ -222,6 +222,7 @@ jobs:
 
       - name: Set release tag and type
         id: vars
+        shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
   echo "release_tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
