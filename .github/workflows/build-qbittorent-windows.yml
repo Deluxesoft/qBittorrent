@@ -1,6 +1,7 @@
 # (modified for asset attestation)
 # qBittorrent yml for release (based on ci-windows.yml and the libtorrent version it was built upon is reflected in the exe name):
 
+
 name: Build and Release qBittorrent Installer
 
 on:
@@ -190,6 +191,7 @@ jobs:
             upload/${{ steps.prepare_artifacts.outputs.portableZipName }}
             dist/windows/${{ steps.rename_installer_with_libtorrent_version.outputs.newInstallerFileName }}
           retention-days: 7
+          attestation: true
 
   release:
     name: Create GitHub Release
