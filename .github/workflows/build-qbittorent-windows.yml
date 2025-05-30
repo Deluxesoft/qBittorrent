@@ -2,14 +2,12 @@
 # qBittorrent yml for release (based on ci-windows.yml and the libtorrent version it was built upon is also reflected in the exe name)
 
 
-# (modified for provenance verification)
-# qBittorrent yml for release (based on ci-windows.yml and the libtorrent version it was built upon is reflected in the exe name):
-
 name: Build and Release qBittorrent Installer
 
 on:
   push:
-  workflow_dispatch:
+    tags:
+      - 'v*' # to trigger on tag names that start with v, to start on any tag use - '*'
 
 permissions:
   contents: write
@@ -228,17 +226,14 @@ jobs:
         shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "release_tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-            echo "is_tag=true" >> "$GITHUB_OUTPUT"
-          else
-            refname="${GITHUB_REF#refs/heads/}"
-            refname="${refname#refs/pull/}"
-            echo "release_tag=${refname}-run-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
-            echo "is_tag=false" >> "$GITHUB_OUTPUT"
-          fi
+  echo "release_tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+else
+  echo "::error::This workflow must be triggered by a tag push to create a provenance badge."
+  exit 1
+fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.1.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
