@@ -2,17 +2,23 @@
 # qBittorrent yml for release (based on ci-windows.yml and the libtorrent version it was built upon is also reflected in the exe name)
 
 
+# (modified for provenance verification)
+# qBittorrent yml for release (based on ci-windows.yml and the libtorrent version it was built upon is reflected in the exe name):
+
 name: Build and Release qBittorrent Installer
+
 on:
   push:
-    tags:
-      - v*
+  workflow_dispatch:
+
 permissions:
   contents: write
   id-token: write
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: ${{ github.head_ref != '' }}
+
 jobs:
   ci:
     name: Build (libtorrent ${{ matrix.libt_version }})
@@ -20,20 +26,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        libt_version:
-          - 2.0.11
-          - 1.2.20
+        libt_version: ["2.0.11", "1.2.20"]
     env:
-      boost_path: ${{ github.workspace }}/../boost
-      libtorrent_path: ${{ github.workspace }}/../libtorrent
-      vcpkg_path: c:/vcpkg
+      boost_path: "${{ github.workspace }}/../boost"
+      libtorrent_path: "${{ github.workspace }}/../libtorrent"
+      vcpkg_path: "c:/vcpkg"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - name: Setup devcmd
         uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install build tools
         run: |
           if ((Get-Command "ninja.exe" -ErrorAction SilentlyContinue) -eq $null)
@@ -42,19 +48,17 @@ jobs:
           }
           where.exe ninja
           ninja --version
+
       - name: Set variables for vcpkg
         uses: actions/github-script@v7
         with:
-          script: >
-            core.exportVariable('ACTIONS_CACHE_URL', (process.env.ACTIONS_CACHE_URL
-            || ''));
-
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', (process.env.ACTIONS_CACHE_URL || ''));
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', (process.env.ACTIONS_RUNTIME_TOKEN || ''));
-      - name: Install dependencies with vcpkg
-        run: >
-          New-Item -Force -ItemType File "${{ env.vcpkg_path
-          }}/triplets_overlay/x64-windows-static-md-release.cmake"
 
+      - name: Install dependencies with vcpkg
+        run: |
+          New-Item -Force -ItemType File "${{ env.vcpkg_path }}/triplets_overlay/x64-windows-static-md-release.cmake"
           Add-Content -Path "${{ env.vcpkg_path }}/triplets_overlay/x64-windows-static-md-release.cmake" `
             -Value @("set(VCPKG_TARGET_ARCHITECTURE x64)",
               "set(VCPKG_LIBRARY_LINKAGE static)",
@@ -64,162 +68,106 @@ jobs:
             "openssl:x64-windows-static-md-release",
             "zlib:x64-windows-static-md-release"
           ${{ env.vcpkg_path }}/vcpkg.exe upgrade --no-dry-run --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay"
-
           ${{ env.vcpkg_path }}/vcpkg.exe install --binarysource="clear;x-gha,readwrite" --clean-after-build --overlay-triplets="${{ env.vcpkg_path }}/triplets_overlay" $packages
+
       - name: Install boost
         env:
           BOOST_MAJOR_VERSION: "1"
           BOOST_MINOR_VERSION: "86"
           BOOST_PATCH_VERSION: "0"
-        run: >
-          $boost_url="https://archives.boost.io/release/${{ env.BOOST_MAJOR_VERSION
-          }}.${{ env.BOOST_MINOR_VERSION }}.${{ env.BOOST_PATCH_VERSION
-          }}/source/boost_${{ env.BOOST_MAJOR_VERSION }}_${{
-          env.BOOST_MINOR_VERSION }}_${{ env.BOOST_PATCH_VERSION }}.tar.gz"
-
+        run: |
+          $boost_url="https://archives.boost.io/release/${{ env.BOOST_MAJOR_VERSION }}.${{ env.BOOST_MINOR_VERSION }}.${{ env.BOOST_PATCH_VERSION }}/source/boost_${{ env.BOOST_MAJOR_VERSION }}_${{ env.BOOST_MINOR_VERSION }}_${{ env.BOOST_PATCH_VERSION }}.tar.gz"
           $boost_url2="https://sourceforge.net/projects/boost/files/boost/${{ env.BOOST_MAJOR_VERSION }}.${{ env.BOOST_MINOR_VERSION }}.${{ env.BOOST_PATCH_VERSION }}/boost_${{ env.BOOST_MAJOR_VERSION }}_${{ env.BOOST_MINOR_VERSION }}_${{ env.BOOST_PATCH_VERSION }}.tar.gz"
-
           curl -L -o "${{ runner.temp }}/boost.tar.gz" "$boost_url"
-
           tar -xf "${{ runner.temp }}/boost.tar.gz" -C "${{ github.workspace }}/.."
-
           if ($LastExitCode -ne 0)
-
           {
             curl -L -o "${{ runner.temp }}/boost.tar.gz" "$boost_url2"
             tar -xf "${{ runner.temp }}/boost.tar.gz" -C "${{ github.workspace }}/.."
           }
-
           move "${{ github.workspace }}/../boost_*" "${{ env.boost_path }}"
-
           cd "${{ env.boost_path }}"
-
           ${{ env.vcpkg_path }}/installed/x64-windows-static-md-release/tools/boost-build/b2.exe stage toolset=msvc --stagedir=.\ --with-headers
+
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: 6.9.0
+          version: "6.9.0"
           arch: win64_msvc2022_64
           archives: qtbase qtsvg qttools
           cache: true
+
       - name: Install libtorrent
-        run: >
-          git clone --branch v${{ matrix.libt_version }} --depth 1
-          --recurse-submodules https://github.com/arvidn/libtorrent.git ${{
-          env.libtorrent_path }}
-
+        run: |
+          git clone --branch v${{ matrix.libt_version }} --depth 1 --recurse-submodules https://github.com/arvidn/libtorrent.git ${{ env.libtorrent_path }}
           cd ${{ env.libtorrent_path }}
-
           $env:CXXFLAGS+=" /guard:cf"
-
           $env:LDFLAGS+=" /guard:cf"
-
           cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_STANDARD=20 -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_INSTALL_PREFIX="${{ env.libtorrent_path }}/install" -DCMAKE_TOOLCHAIN_FILE="${{ env.vcpkg_path }}/scripts/buildsystems/vcpkg.cmake" -DBOOST_ROOT="${{ env.boost_path }}/lib/cmake" -DBUILD_SHARED_LIBS=OFF -Ddeprecated-functions=OFF -Dstatic_runtime=OFF -DVCPKG_TARGET_TRIPLET=x64-windows-static-md-release
-
           cmake --build build
-
           cmake --install build
+
       - name: Build qBittorrent
-        run: >
+        run: |
           $env:CXXFLAGS+="/DQT_FORCE_ASSERTS /WX"
-
           cmake -B build -G "Ninja" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_TOOLCHAIN_FILE="${{ env.vcpkg_path }}/scripts/buildsystems/vcpkg.cmake" -DBOOST_ROOT="${{ env.boost_path }}/lib/cmake" -DLibtorrentRasterbar_DIR="${{ env.libtorrent_path }}/install/lib/cmake/LibtorrentRasterbar" -DMSVC_RUNTIME_DYNAMIC=ON -DTESTING=ON -DVCPKG_TARGET_TRIPLET=x64-windows-static-md-release -DVERBOSE_CONFIGURE=ON --graphviz=build/target_graph.dot
-
           cmake --build build --target qbt_update_translations
-
           cmake --build build
-
           cmake --build build --target check
+
       - name: Prepare build artifacts (Portable Zip & Installer)
         id: prepare_artifacts
-        run: >
+        run: |
           $buildDir = "upload/qBittorrent"
-
           mkdir $buildDir
-
           copy build/qbittorrent.exe $buildDir
-
           copy build/qbittorrent.pdb $buildDir
-
           copy dist/windows/qt.conf $buildDir
-
           # runtimes
-
           copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Core.dll" $buildDir
-
           copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Gui.dll" $buildDir
-
           copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Network.dll" $buildDir
-
           copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Sql.dll" $buildDir
-
           copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Svg.dll" $buildDir
-
           copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Widgets.dll" $buildDir
-
           copy "${{ env.Qt_ROOT_DIR }}/bin/Qt6Xml.dll" $buildDir
-
           mkdir "$buildDir/plugins/iconengines"
-
           copy "${{ env.Qt_ROOT_DIR }}/plugins/iconengines/qsvgicon.dll" "$buildDir/plugins/iconengines"
-
           mkdir "$buildDir/plugins/imageformats"
-
           copy "${{ env.Qt_ROOT_DIR }}/plugins/imageformats/qico.dll" "$buildDir/plugins/imageformats"
-
           copy "${{ env.Qt_ROOT_DIR }}/plugins/imageformats/qsvg.dll" "$buildDir/plugins/imageformats"
-
           mkdir "$buildDir/plugins/platforms"
-
           copy "${{ env.Qt_ROOT_DIR }}/plugins/platforms/qwindows.dll" "$buildDir/plugins/platforms"
-
           mkdir "$buildDir/plugins/sqldrivers"
-
           copy "${{ env.Qt_ROOT_DIR }}/plugins/sqldrivers/qsqlite.dll" "$buildDir/plugins/sqldrivers"
-
           mkdir "$buildDir/plugins/styles"
-
           copy "${{ env.Qt_ROOT_DIR }}/plugins/styles/qmodernwindowsstyle.dll" "$buildDir/plugins/styles"
-
           mkdir "$buildDir/plugins/tls"
-
           copy "${{ env.Qt_ROOT_DIR }}/plugins/tls/qschannelbackend.dll" "$buildDir/plugins/tls"
 
-
           # --- vv fix: add one line below ---
-
           $qbtAppVersion = (Get-Item "build/qbittorrent.exe").VersionInfo.ProductVersion
-
           $qbtAppVersion = $qbtAppVersion -replace '^v+', '' # Remove any leading v's
-
           $portableZipName = "qBittorrent_Portable_win_x64_v${qbtAppVersion}_libt_${{ matrix.libt_version }}.zip"
-
           Compress-Archive -Path $buildDir -DestinationPath "upload/$portableZipName" -Force
-
           echo "portableZipName=$portableZipName" >> $env:GITHUB_OUTPUT
 
-
           mkdir upload/cmake
-
           copy build/compile_commands.json upload/cmake
-
           copy build/target_graph.dot upload/cmake
-
           mkdir upload/cmake/libtorrent
-
           copy ${{ env.libtorrent_path }}/build/compile_commands.json upload/cmake/libtorrent
-      - name: Create installer
-        run: >
-          7z x -o"dist/windows/" "dist/windows/NSISPlugins.zip"
 
+      - name: Create installer
+        run: |
+          7z x -o"dist/windows/" "dist/windows/NSISPlugins.zip"
           makensis /DQBT_DIST_DIR="../../upload/qBittorrent" /WX dist/windows/qbittorrent.nsi
+
       - name: Rename installer with Libtorrent version
         shell: pwsh
         id: rename_installer_with_libtorrent_version
-        run: >
-          $installerFile = Get-ChildItem -Path "dist/windows" -Filter
-          "qbittorrent_*.exe" | Select-Object -First 1
-
+        run: |
+          $installerFile = Get-ChildItem -Path "dist/windows" -Filter "qbittorrent_*.exe" | Select-Object -First 1
           if ($null -ne $installerFile) {
               $originalFileName = $installerFile.BaseName
               # --- vv fix: add the line below ---
@@ -236,15 +184,16 @@ jobs:
               Write-Warning "No qBittorrent installer file found to rename. Please check the 'Create installer' step output."
               exit 1
           }
+
       - name: Upload all build assets for release
         uses: actions/upload-artifact@v4
         with:
           name: qBittorrent-Build-Assets-libt-${{ matrix.libt_version }}
-          path: >
+          path: |
             upload/${{ steps.prepare_artifacts.outputs.portableZipName }}
-
             dist/windows/${{ steps.rename_installer_with_libtorrent_version.outputs.newInstallerFileName }}
           retention-days: 7
+
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
@@ -252,64 +201,60 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Create downloaded_artifacts directory
         run: mkdir -p downloaded_artifacts
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
           path: downloaded_artifacts
+
       - name: Collect release assets
         id: collect_assets
-        run: >
+        run: |
           mkdir -p release_assets
-
           find downloaded_artifacts -mindepth 2 -type f -name 'qbittorrent_*.exe' -exec mv {} release_assets/ \;
-
           find downloaded_artifacts -mindepth 2 -type f -name 'qBittorrent_Portable_*.zip' -exec mv {} release_assets/ \;
-
           echo "--- Collected Assets for Release ---"
-
           ls -l release_assets/
-
           if [ -z "$(ls -A release_assets/)" ]; then
             echo "::error::No release assets found in 'release_assets' directory!"
             exit 1
           fi
+
       - name: Set release tag and type
         id: vars
         shell: bash
-        run: >
+        run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             echo "release_tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "is_tag=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::This workflow must be triggered by a tag push to create a provenance badge."
-            exit 1
+            refname="${GITHUB_REF#refs/heads/}"
+            refname="${refname#refs/pull/}"
+            echo "release_tag=${refname}-run-${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
+            echo "is_tag=false" >> "$GITHUB_OUTPUT"
           fi
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2.1.0
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           files: release_assets/*
           tag_name: ${{ steps.vars.outputs.release_tag }}
           name: Release ${{ steps.vars.outputs.release_tag }}
-          body: >
+          body: |
             ## qBittorrent Release ${{ steps.vars.outputs.release_tag }}
 
-
             This release includes Windows x64 builds with the following libtorrent versions:
-
             * **2.0.11**
-
             * **1.2.20**
 
-
             ### Assets:
-
             * **Installers** (e.g., `qbittorrent_win_x64_v<qbt_version>_libt_2.0.11.exe`)
-
             * **Portable versions** (e.g., `qBittorrent_Portable_win_x64_v<qbt_version>_libt_2.0.11.zip`)
-
 
             For more detailed changes, please refer to the commit history.
           draft: false
