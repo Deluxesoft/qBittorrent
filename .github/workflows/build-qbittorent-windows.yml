@@ -1,5 +1,5 @@
 # (modified for provenance verification)
-# qBittorrent yml for release (based on ci-windows.yml and the libtorrent version it was built upon is reflected in the exe name):
+# qBittorrent yml for release (based on ci-windows.yml and the libtorrent version it was built upon is also reflected in the exe name)
 
 name: Build and Release qBittorrent Installer
 
