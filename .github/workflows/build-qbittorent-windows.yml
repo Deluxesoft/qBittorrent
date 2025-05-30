@@ -226,7 +226,7 @@ jobs:
         shell: bash
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-  echo "release_tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+  echo "release_tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 else
   echo "::error::This workflow must be triggered by a tag push to create a provenance badge."
   exit 1
