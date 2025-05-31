@@ -12,6 +12,7 @@ on:
 permissions:
   contents: write
   id-token: write
+  attestations: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -184,14 +185,16 @@ jobs:
           }
 
       - name: Attest Portable Zip provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v2
         with:
           subject-path: upload/${{ steps.prepare_artifacts.outputs.portableZipName }}
+          github-token: ${{ secrets.ATTESTATION_TOKEN }}
 
       - name: Attest Installer provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/windows/${{ steps.rename_installer_with_libtorrent_version.outputs.newInstallerFileName }}
+          github-token: ${{ secrets.ATTESTATION_TOKEN }}
 
       - name: Upload all build assets for release
         uses: actions/upload-artifact@v4.6.2
