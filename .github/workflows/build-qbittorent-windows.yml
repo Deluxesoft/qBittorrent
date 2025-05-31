@@ -183,15 +183,24 @@ jobs:
               exit 1
           }
 
+      - name: Attest Portable Zip provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: upload/${{ steps.prepare_artifacts.outputs.portableZipName }}
+
+      - name: Attest Installer provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/windows/${{ steps.rename_installer_with_libtorrent_version.outputs.newInstallerFileName }}
+
       - name: Upload all build assets for release
-        uses: actions/upload-artifact@a721fa3c7f2e8ae6d22ea0d2c4f6de504cda9d9e
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: qBittorrent-Build-Assets-libt-${{ matrix.libt_version }}
           path: |
             upload/${{ steps.prepare_artifacts.outputs.portableZipName }}
             dist/windows/${{ steps.rename_installer_with_libtorrent_version.outputs.newInstallerFileName }}
           retention-days: 7
-          attestation: true
 
   release:
     name: Create GitHub Release
@@ -256,3 +265,4 @@ jobs:
           draft: false
           prerelease: false
           attestation: true
+          
