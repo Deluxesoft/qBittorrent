@@ -1,0 +1,22 @@
+name: Attestation Test
+
+on:
+  push:
+    tags: [ 'test-attest-*' ]
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create file
+        run: echo hello > hello.txt
+      - name: Upload artifact with attestation
+        uses: actions/upload-artifact@v4.3.1
+        with:
+          name: hello
+          path: hello.txt
+          attestation: true
