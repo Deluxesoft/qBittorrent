@@ -197,8 +197,8 @@ jobs:
           github-token: ${{ secrets.ATTESTATION_TOKEN }}
 
       - name: Upload all build assets for release
-        uses: actions/upload-artifact@v4.6.2
-        with:
+        uses: actions/upload-artifact@v4
+        with: # using @v4 according to the AI resolves to the lastest version of 4.x.x (like 4.6.0) but if 5 comes out it should be changed to @v5
           name: qBittorrent-Build-Assets-libt-${{ matrix.libt_version }}
           path: |
             upload/${{ steps.prepare_artifacts.outputs.portableZipName }}
@@ -267,5 +267,5 @@ jobs:
             For more detailed changes, please refer to the commit history.
           draft: false
           prerelease: false
-          attestation: true
+          
           
